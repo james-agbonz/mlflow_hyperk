@@ -1,0 +1,133 @@
+version: "3.9"
+
+services:
+  # MongoDB Service
+  mongodb:
+    image: mongo:6
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 5s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    command: mongod --quiet --logpath /dev/null
+
+  # MLflow Tracking Server
+  mlflow:
+    image: ghcr.io/mlflow/mlflow
+    container_name: mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/mlflow/mlruns
+      - ./mlruns:/app/mlruns
+    command: mlflow server --backend-store-uri /mlflow/mlruns --host 0.0.0.0 --port 5000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Training Service
+  trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - ./mlruns:/mlflow/mlruns
+      - ./artifacts:/app/artifacts
+      - ./mlruns:/app/mlruns
+    working_dir: /app/trainer
+    command: python train.py
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      - mlflow
+    
+
+  # Model Explainer Service (Flask)
+  explainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/app/data
+      - ./explainer:/app/code
+      - ./.env:/app/.env
+      - .:/app
+      - ./mlruns:/app/mlruns
+    working_dir: /app/code
+    ports:
+      - "5005:5005"
+    command: python app.py
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      trainer:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Evaluation Service
+  evaluator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/app/data
+      - ./evaluator:/app/code
+      - ./.env:/app/.env
+      - .:/app
+    working_dir: /app/code
+    ports:
+      - "5006:5006"
+    command: python app.py
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      trainer:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/app/data
+      - ./dashboard:/app/code
+      - ./.env:/app/.env
+      - .:/app
+      - ./mlruns:/app/mlruns
+    working_dir: /app/code
+    ports:
+      - "8501:8501"
+    command: streamlit run dashboard.py
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      explainer:
+        condition: service_started
+      mlflow:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  mongodb_data:
