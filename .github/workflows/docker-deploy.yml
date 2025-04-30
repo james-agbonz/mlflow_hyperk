@@ -1,0 +1,67 @@
+name: Docker CI/CD
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Build and start containers
+      run: |
+        docker-compose build
+        docker-compose up -d
+      
+    - name: Wait for services to initialize
+      run: sleep 30
+      
+    - name: Check container status
+      run: docker-compose ps
+      
+    - name: Run ML training
+      run: |
+        # Optional - Run any specific commands to interact with the trainer container
+        docker-compose exec -T trainer python train.py || true
+        
+    - name: Run evaluations
+      run: |
+        # Optional - Run evaluation after training
+        docker-compose exec -T evaluator python evaluate.py || true
+        
+    - name: Run explanation generation
+      run: |
+        # Optional - Generate model explanations
+        docker-compose exec -T explainer python explain.py || true
+      
+    - name: Logs from containers
+      if: always()  # Run even if previous steps failed
+      run: |
+        echo "=== TRAINER LOGS ==="
+        docker-compose logs trainer
+        echo "=== EVALUATOR LOGS ==="
+        docker-compose logs evaluator
+        echo "=== EXPLAINER LOGS ==="
+        docker-compose logs explainer
+        echo "=== DASHBOARD LOGS ==="
+        docker-compose logs dashboard
+      
+    - name: Stop containers
+      if: always()  # Run even if previous steps failed
+      run: docker-compose down
