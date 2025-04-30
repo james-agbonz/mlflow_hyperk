@@ -165,79 +165,79 @@ jobs:
           # Shut down containers
           docker-compose down -v
 
-  deploy-dev:
-    name: Deploy to Development
-    needs: [build-images, docker-compose-test]
-    if: github.ref == 'refs/heads/dev' || github.event.inputs.environment == 'dev'
-    runs-on: ubuntu-latest
-    environment: development
+  # deploy-dev:
+  #   name: Deploy to Development
+  #   needs: [build-images, docker-compose-test]
+  #   if: github.ref == 'refs/heads/dev' || github.event.inputs.environment == 'dev'
+  #   runs-on: ubuntu-latest
+  #   environment: development
     
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+  #     - name: Configure AWS credentials
+  #       uses: aws-actions/configure-aws-credentials@v4
+  #       with:
+  #         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Set up SSH
-        uses: webfactory/ssh-agent@v0.8.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+  #     - name: Set up SSH
+  #       uses: webfactory/ssh-agent@v0.8.0
+  #       with:
+  #         ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Deploy to server
-        run: |
-          # Add the server's host key to known_hosts
-          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+  #     - name: Deploy to server
+  #       run: |
+  #         # Add the server's host key to known_hosts
+  #         ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
           
-          # Copy docker-compose and related files
-          scp docker-compose.yml requirements.txt ${{ secrets.SSH_USER }}@${{ secrets.SERVER_IP }}:~/ml-pipeline/
+  #         # Copy docker-compose and related files
+  #         scp docker-compose.yml requirements.txt ${{ secrets.SSH_USER }}@${{ secrets.SERVER_IP }}:~/ml-pipeline/
           
-          # Create necessary directories
-          ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_IP }} "mkdir -p ~/ml-pipeline/data/train ~/ml-pipeline/data/test ~/ml-pipeline/mlruns ~/ml-pipeline/artifacts"
+  #         # Create necessary directories
+  #         ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_IP }} "mkdir -p ~/ml-pipeline/data/train ~/ml-pipeline/data/test ~/ml-pipeline/mlruns ~/ml-pipeline/artifacts"
           
-          # Pull latest images and restart
-          ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_IP }} "cd ~/ml-pipeline && \
-            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin && \
-            docker-compose pull && \
-            docker-compose up -d"
+  #         # Pull latest images and restart
+  #         ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_IP }} "cd ~/ml-pipeline && \
+  #           echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin && \
+  #           docker-compose pull && \
+  #           docker-compose up -d"
 
-  deploy-prod:
-    name: Deploy to Production
-    needs: [build-images, docker-compose-test]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event.inputs.environment == 'prod'
-    runs-on: ubuntu-latest
-    environment: production
+  # deploy-prod:
+  #   name: Deploy to Production
+  #   needs: [build-images, docker-compose-test]
+  #   if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event.inputs.environment == 'prod'
+  #   runs-on: ubuntu-latest
+  #   environment: production
     
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+  #     - name: Configure AWS credentials
+  #       uses: aws-actions/configure-aws-credentials@v4
+  #       with:
+  #         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Deploy to Kubernetes
-        run: |
-          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}
+  #     - name: Deploy to Kubernetes
+  #       run: |
+  #         aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}
           
-          # Apply Kubernetes manifests
-          kubectl apply -f k8s/namespace.yaml
-          kubectl apply -f k8s/secrets.yaml
-          kubectl apply -f k8s/configmap.yaml
-          kubectl apply -f k8s/mongodb.yaml
-          kubectl apply -f k8s/mlflow.yaml
-          kubectl apply -f k8s/trainer.yaml
-          kubectl apply -f k8s/evaluator.yaml
-          kubectl apply -f k8s/explainer.yaml
-          kubectl apply -f k8s/dashboard.yaml
+  #         # Apply Kubernetes manifests
+  #         kubectl apply -f k8s/namespace.yaml
+  #         kubectl apply -f k8s/secrets.yaml
+  #         kubectl apply -f k8s/configmap.yaml
+  #         kubectl apply -f k8s/mongodb.yaml
+  #         kubectl apply -f k8s/mlflow.yaml
+  #         kubectl apply -f k8s/trainer.yaml
+  #         kubectl apply -f k8s/evaluator.yaml
+  #         kubectl apply -f k8s/explainer.yaml
+  #         kubectl apply -f k8s/dashboard.yaml
           
-          # Wait for deployments
-          kubectl -n ml-pipeline rollout status deployment/mlflow
-          kubectl -n ml-pipeline rollout status deployment/dashboard
+  #         # Wait for deployments
+  #         kubectl -n ml-pipeline rollout status deployment/mlflow
+  #         kubectl -n ml-pipeline rollout status deployment/dashboard
