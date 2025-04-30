@@ -1,1 +1,13 @@
-
+torch>=1.12
+torchvision>=0.13
+mlflow>=2.0
+flask>=2.0
+Pillow>=9.0
+numpy>=1.22
+scikit-learn>=1.1
+pandas
+matplotlib
+shap
+streamlit
+captum
+seaborn
