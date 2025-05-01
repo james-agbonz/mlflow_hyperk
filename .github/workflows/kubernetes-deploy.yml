@@ -51,7 +51,7 @@ jobs:
       uses: docker/build-push-action@v4
       with:
         context: ./trainer
-        file: ./trainer/Dockerfile
+        file: ../Dockerfile
         push: true
         tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/trainer:latest
         labels: ${{ steps.meta.outputs.labels }}
@@ -62,7 +62,7 @@ jobs:
       uses: docker/build-push-action@v4
       with:
         context: ./evaluator
-        file: ./evaluator/Dockerfile
+        file: ../Dockerfile
         push: true
         tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/evaluator:latest
         labels: ${{ steps.meta.outputs.labels }}
@@ -73,7 +73,7 @@ jobs:
       uses: docker/build-push-action@v4
       with:
         context: ./explainer
-        file: ./explainer/Dockerfile
+        file: ../Dockerfile
         push: true
         tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/explainer:latest
         labels: ${{ steps.meta.outputs.labels }}
@@ -84,7 +84,7 @@ jobs:
       uses: docker/build-push-action@v4
       with:
         context: ./dashboard
-        file: ./dashboard/Dockerfile
+        file: ../Dockerfile
         push: true
         tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/dashboard:latest
         labels: ${{ steps.meta.outputs.labels }}
