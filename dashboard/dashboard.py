@@ -14,7 +14,11 @@ import base64
 
 # ----- PAGE CONFIG -----
 st.set_page_config(layout="wide", page_title="ML Pipeline Dashboard")
-st.title("🔍 ML Pipeline Dashboard")
+col1, col2 = st.columns([1,2])
+with col1:
+    st.image("logo.png", width=80)
+with col2:
+    st.markdown("## ML Pipeline Dashboard")
 
 # ----- MLFLOW CLIENT SETUP -----
 @st.cache_resource
@@ -123,7 +127,7 @@ def display_dataset_stats(run_id):
                 class_df = pd.DataFrame(list(stats["class_distribution"].items()), 
                                         columns=["Class", "Count"])
                 
-                fig, ax = plt.subplots(figsize=(10, 5))
+                fig, ax = plt.subplots(figsize=(6, 3))      #------resize image here
                 sns.barplot(data=class_df, x="Class", y="Count", ax=ax)
                 ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
                 st.pyplot(fig)
@@ -263,7 +267,7 @@ with tab3:
                 
                 with col2:
                     st.subheader("Metrics Visualization")
-                    fig, ax = plt.subplots(figsize=(8, 6))
+                    fig, ax = plt.subplots(figsize=(6, 4))
                     metrics_df = df.copy()
                     sns.barplot(data=metrics_df, x="Metric", y="Value", ax=ax)
                     ax.set_ylim(0, 1)
@@ -293,136 +297,182 @@ with tab3:
 # ----- TAB 4: EXPLANATIONS -----
 with tab4:
     st.header("🧠 Model Explanations")
+    
     if selected_run:
-        explain_data = fetch_json("explainer:5005/explain", selected_run)
-        
-        if explain_data:
-            st.subheader("Feature Importance")
-            
-            # Check if we have a list of dictionaries or a single dictionary
-            if isinstance(explain_data, list):
-                df = pd.DataFrame(explain_data)
-            elif isinstance(explain_data, dict):
-                if "explanations" in explain_data:
-                    df = pd.DataFrame(explain_data["explanations"])
-                elif "error" in explain_data:
-                    st.error(f"Error from explainer: {explain_data['error']}")
-                    st.code(explain_data.get("traceback", "No traceback available"))
-                    df = pd.DataFrame()
-                else:
-                    df = pd.DataFrame([explain_data])
-            else:
-                st.error("Unexpected data format from explainer")
-                df = pd.DataFrame()
-            
-            if not df.empty:
-                # Extract importance columns and display feature importance
-                importance_cols = [col for col in df.columns if "importance" in col]
-                if importance_cols:
-                    # Create feature importance plot
-                    st.subheader("Channel Importance")
-                    
-                    # Calculate average importance for each feature
-                    feature_importance = {}
-                    for col in importance_cols:
-                        feature = col.split("_")[0]
-                        importance_type = "_".join(col.split("_")[1:])
-                        if feature not in feature_importance:
-                            feature_importance[feature] = {}
-                        feature_importance[feature][importance_type] = df[col].mean()
-                    
-                    # Convert to dataframe for plotting
-                    fi_df = pd.DataFrame([
-                        {"Feature": feature, "Type": imp_type, "Importance": value}
-                        for feature, imp_dict in feature_importance.items()
-                        for imp_type, value in imp_dict.items()
-                    ])
-                    
-                    if not fi_df.empty:
-                        # Plot feature importance
-                        fig, ax = plt.subplots(figsize=(10, 6))
-                        sns.barplot(data=fi_df, x="Feature", y="Importance", hue="Type", ax=ax)
-                        ax.set_title("Average Feature Importance")
-                        ax.set_xlabel("Feature")
-                        ax.set_ylabel("Importance")
-                        ax.grid(True, linestyle='--', alpha=0.7)
-                        st.pyplot(fig)
-                
-                # Check if we have sample-level data
-                if 'image' in df.columns:
-                    st.subheader("Sample-Level Explanations")
-                    
-                    # Get a list of unique images
-                    images = df['image'].unique()
-                    selected_image = st.selectbox("Select image", options=images)
-                    
-                    # Filter data for the selected image
-                    image_data = df[df['image'] == selected_image]
-                    
-                    # Create a bar plot of feature importance for the selected image
-                    if not image_data.empty:
-                        importance_cols = [col for col in image_data.columns if "importance" in col]
-                        if importance_cols:
-                            # Reshape data for plotting
-                            plot_data = []
-                            for col in importance_cols:
-                                feature, imp_type = col.split("_", 1)
-                                plot_data.append({
-                                    "Feature": feature,
-                                    "Importance Type": imp_type,
-                                    "Value": image_data[col].iloc[0]
-                                })
-                            
-                            plot_df = pd.DataFrame(plot_data)
-                            
-                            fig, ax = plt.subplots(figsize=(10, 6))
-                            sns.barplot(data=plot_df, x="Feature", y="Value", hue="Importance Type", ax=ax)
-                            ax.set_title(f"Feature Importance for {selected_image}")
-                            ax.grid(True, linestyle='--', alpha=0.7)
-                            st.pyplot(fig)
-                
-                # Display raw data if requested
-                if show_raw_data:
-                    st.subheader("Raw Explanation Data")
-                    st.dataframe(df, use_container_width=True)
-            
-            # Check for explanation plots
+        with st.spinner("🔍 Fetching explanation data..."):
+            explain_data = fetch_json("explainer:5005/explain", selected_run)
+
+        if not explain_data:
+            st.warning("❌ No explanation data received.")
+            st.stop()
+
+        if isinstance(explain_data, dict) and "error" in explain_data:
+            st.error("🚨 Explainer returned an error:")
+            st.code(explain_data["error"])
+            if "traceback" in explain_data:
+                with st.expander("Traceback"):
+                    st.code(explain_data["traceback"])
+            st.stop()
+
+        st.subheader("📊 Feature Importance")
+
+        # Normalize input
+        if isinstance(explain_data, list):
+            df = pd.DataFrame(explain_data)
+        elif isinstance(explain_data, dict):
+            df = pd.DataFrame(explain_data.get("explanations", []))
+        else:
+            st.warning("Unexpected data format.")
+            st.stop()
+
+        if df.empty:
+            st.warning("No explanation data found.")
+            st.stop()
+
+        # --- Average Feature Importance ---
+        importance_cols = [col for col in df.columns if "importance" in col]
+        if importance_cols:
+            st.markdown("### 🔬 Channel-wise Average Importance")
+            fi_dict = {}
+            for col in importance_cols:
+                feature = col.split("_")[0]
+                typ = "_".join(col.split("_")[1:])
+                fi_dict.setdefault(feature, {})[typ] = df[col].mean()
+
+            fi_df = pd.DataFrame([
+                {"Feature": feat, "Type": t, "Importance": val}
+                for feat, sub in fi_dict.items()
+                for t, val in sub.items()
+            ])
+
+            fig, ax = plt.subplots(figsize=(6, 4))
+            sns.barplot(data=fi_df, x="Feature", y="Importance", hue="Type", ax=ax)
+            ax.set_title("Average Feature Importance")
+            ax.set_xlabel("Feature")
+            ax.set_ylabel("Importance")
+            ax.grid(True, linestyle="--", alpha=0.5)
+            st.pyplot(fig)
+
+        # --- Sample-Level Feature Breakdown ---
+        if 'image' in df.columns:
+            st.markdown("### 🖼️ Individual Image Explanation")
+            image_options = df['image'].unique()
+            selected_image = st.selectbox("Choose image", image_options)
+
+            image_row = df[df['image'] == selected_image]
+            if not image_row.empty:
+                plot_data = []
+                for col in importance_cols:
+                    feature = col.split("_")[0]
+                    imp_type = "_".join(col.split("_")[1:])
+                    plot_data.append({
+                        "Feature": feature,
+                        "Importance Type": imp_type,
+                        "Value": image_row[col].iloc[0]
+                    })
+
+                plot_df = pd.DataFrame(plot_data)
+
+                fig, ax = plt.subplots(figsize=(6, 4))
+                sns.barplot(data=plot_df, x="Feature", y="Value", hue="Importance Type", ax=ax)
+                ax.set_title(f"Feature Importance for {selected_image}")
+                ax.grid(True, linestyle="--", alpha=0.5)
+                st.pyplot(fig)
+
+        # --- Visual Artifacts from Explainer ---
+        plot_info = explain_data.get("plots") if isinstance(explain_data, dict) else None
+        if plot_info:
+            st.markdown("### 📷 Visual Explanations")
+            col1, col2 = st.columns(2)
+
+            if "shap_plot" in plot_info:
+                with col1:
+                    st.markdown("#### SHAP Summary")
+                    shap_img = fetch_image(f"http://explainer:5005/plots/{plot_info['shap_plot']}")
+                    if shap_img:
+                        st.image(shap_img, use_column_width=True)
+                    else:
+                        st.warning("⚠️ SHAP image missing.")
+
+            if "heatmap_plot" in plot_info:
+                with col2:
+                    st.markdown("#### Integrated Gradients")
+                    heat_img = fetch_image(f"http://explainer:5005/plots/{plot_info['heatmap_plot']}")
+                    if heat_img:
+                        st.image(heat_img, use_column_width=True)
+                    else:
+                        st.warning("⚠️ IG heatmap missing.")
+
+        # Optional raw data display
+        if show_raw_data:
+            st.markdown("### 📄 Raw Explanation Data")
+            st.dataframe(df, use_container_width=True)
+
+    else:
+        st.warning("Please select a run to view explanations.")
+
+# --- TAB 5: Metrics / Insights ---
+# --- TAB 5: Metrics / Insights ---
+with tab5:
+    st.header("📈 Metrics and Outputs")
+
+    if selected_run:
+        # ✅ Fix 1: safer request with error handling
+        try:
+            response = requests.get(f"http://mlflow:5000/api/2.0/mlflow/runs/get?run_id={selected_run}")
+            run_data = response.json() if response.status_code == 200 else None
+        except Exception as e:
+            st.error(f"Error fetching run data: {e}")
+            run_data = None
+
+        if run_data and "run" in run_data:
+            metrics = run_data["run"]["data"].get("metrics", {})
+            params = run_data["run"]["data"].get("params", {})
+
+            st.subheader("🔧 Parameters")
+            st.json(params)
+
+            st.subheader("📊 Metrics")
+            st.json(metrics)
+
+            if "accuracy" in metrics:
+                st.metric("Final Accuracy", f"{metrics['accuracy']:.2f}%")
+            if "loss" in metrics:
+                st.metric("Final Loss", f"{metrics['loss']:.4f}")
+
+            # ✅ Fix 2: Enhanced Visual Explanations
             plot_info = None
-            
-            # Look for plot information in the data
-            if isinstance(explain_data, list) and explain_data:
-                if "plots" in explain_data[0]:
-                    plot_info = explain_data[0]["plots"]
-            elif isinstance(explain_data, dict):
-                if "plots" in explain_data:
-                    plot_info = explain_data["plots"]
-            
+            try:
+                explain_data = fetch_json("explainer:5005/explain", selected_run)
+                if explain_data and isinstance(explain_data, dict):
+                    plot_info = explain_data.get("plots", {})
+            except:
+                st.warning("Unable to fetch plot information.")
+
             if plot_info:
-                st.subheader("Explanation Visualizations")
-                
+                st.markdown("### 📷 Visual Explanations")
+                img_size = st.slider("Image size", 200, 800, 400)
+
                 col1, col2 = st.columns(2)
-                
-                # Display SHAP plot if available
-                if "shap_plot" in plot_info:
+
+                if "feature_importance" in plot_info:
                     with col1:
-                        st.subheader("SHAP Summary Plot")
-                        shap_img = fetch_image(f"http://explainer:5005/plots/{plot_info['shap_plot']}")
-                        if shap_img:
-                            st.image(shap_img, use_column_width=True)
+                        st.markdown("#### Feature Importance")
+                        feature_img = fetch_image(f"http://explainer:5005/plots/{plot_info['feature_importance']}")
+                        if feature_img:
+                            st.image(feature_img, width=img_size)
                         else:
-                            st.warning("Failed to load SHAP plot")
-                
-                # Display heatmap if available
+                            st.warning("⚠️ Feature importance image missing.")
+
                 if "heatmap_plot" in plot_info:
                     with col2:
-                        st.subheader("Integrated Gradients Heatmap")
-                        heatmap_img = fetch_image(f"http://explainer:5005/plots/{plot_info['heatmap_plot']}")
-                        if heatmap_img:
-                            st.image(heatmap_img, use_column_width=True)
+                        st.markdown("#### Integrated Gradients")
+                        heat_img = fetch_image(f"http://explainer:5005/plots/{plot_info['heatmap_plot']}")
+                        if heat_img:
+                            st.image(heat_img, width=img_size)
                         else:
-                            st.warning("Failed to load heatmap plot")
-            
+                            st.warning("⚠️ IG heatmap missing.")
         else:
-            st.warning("No explanation data available. Run the explainer service first.")
+            st.warning("Unable to fetch run metrics.")
     else:
-        st.warning("No run selected")
+        st.info("Please select a run from the sidebar or previous tab.")
