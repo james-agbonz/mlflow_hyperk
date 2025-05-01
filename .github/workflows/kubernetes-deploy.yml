@@ -46,19 +46,16 @@ jobs:
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
-    # 🔧 Build and push all services using the shared root Dockerfile
     - name: Build and push trainer image
       uses: docker/build-push-action@v4
       with:
         context: .
         file: ./Dockerfile
         push: true
+        no-cache: true
         tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/trainer:latest
-        labels: ${{ steps.meta.outputs.labels }}
         build-args: |
           SERVICE=trainer
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
 
     - name: Build and push evaluator image
       uses: docker/build-push-action@v4
@@ -66,12 +63,10 @@ jobs:
         context: .
         file: ./Dockerfile
         push: true
+        no-cache: true
         tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/evaluator:latest
-        labels: ${{ steps.meta.outputs.labels }}
         build-args: |
           SERVICE=evaluator
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
 
     - name: Build and push explainer image
       uses: docker/build-push-action@v4
@@ -79,12 +74,10 @@ jobs:
         context: .
         file: ./Dockerfile
         push: true
+        no-cache: true
         tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/explainer:latest
-        labels: ${{ steps.meta.outputs.labels }}
         build-args: |
           SERVICE=explainer
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
 
     - name: Build and push dashboard image
       uses: docker/build-push-action@v4
@@ -92,14 +85,17 @@ jobs:
         context: .
         file: ./Dockerfile
         push: true
+        no-cache: true
         tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/dashboard:latest
-        labels: ${{ steps.meta.outputs.labels }}
         build-args: |
           SERVICE=dashboard
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
 
-    # Kubernetes Setup
+    # 💾 Clean up Docker to free space
+    - name: Clean up Docker cache
+      run: |
+        docker system prune -af
+
+    # ⚙️ K8s: Install and configure kubectl
     - name: Install and configure kubectl
       uses: azure/setup-kubectl@v3
       with:
@@ -119,14 +115,82 @@ jobs:
     - name: Generate Kubernetes manifests
       run: |
         mkdir -p k8s && cat <<EOF > k8s/kubernetes-manifests.yaml
-        # same manifest YAML block here (unchanged) ...
-        EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: trainer-job
+  namespace: ${KUBE_NAMESPACE}
+spec:
+  template:
+    spec:
+      containers:
+      - name: trainer
+        image: ${REGISTRY}/${IMAGE_NAME}/trainer:latest
+      restartPolicy: Never
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evaluator
+  namespace: ${KUBE_NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: evaluator
+  template:
+    metadata:
+      labels:
+        app: evaluator
+    spec:
+      containers:
+      - name: evaluator
+        image: ${REGISTRY}/${IMAGE_NAME}/evaluator:latest
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: explainer
+  namespace: ${KUBE_NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: explainer
+  template:
+    metadata:
+      labels:
+        app: explainer
+    spec:
+      containers:
+      - name: explainer
+        image: ${REGISTRY}/${IMAGE_NAME}/explainer:latest
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: ${KUBE_NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      containers:
+      - name: dashboard
+        image: ${REGISTRY}/${IMAGE_NAME}/dashboard:latest
+EOF
 
     - name: Deploy to Kubernetes
       run: |
         kubectl apply -f k8s/kubernetes-manifests.yaml
 
-    - name: Run trainer job
+    - name: Wait for trainer job to complete
       run: |
         kubectl wait --for=condition=complete --timeout=300s job/trainer-job -n ${{ env.KUBE_NAMESPACE }} || true
 
@@ -134,5 +198,5 @@ jobs:
       run: |
         kubectl get jobs -n ${{ env.KUBE_NAMESPACE }}
         kubectl get deployments -n ${{ env.KUBE_NAMESPACE }}
-        kubectl get services -n ${{ env.KUBE_NAMESPACE }}
         kubectl get pods -n ${{ env.KUBE_NAMESPACE }}
+        kubectl get services -n ${{ env.KUBE_NAMESPACE }}
