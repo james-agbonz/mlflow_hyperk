@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evaluator
+  namespace: ml-pipeline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: evaluator
+  template:
+    metadata:
+      labels:
+        app: evaluator
+    spec:
+      containers:
+      - name: evaluator
+        image: ghcr.io/<your-username>/mlpipeline/evaluator:latest
+        ports:
+        - containerPort: 5000
