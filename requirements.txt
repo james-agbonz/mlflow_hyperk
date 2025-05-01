@@ -11,3 +11,4 @@ shap
 streamlit
 captum
 seaborn
+tensorflow
