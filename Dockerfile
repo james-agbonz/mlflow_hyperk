@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Create empty .env file if none exists (prevents errors)
 RUN touch /app/.env
-RUN pip install captum
+RUN pip install captum tensorflow
 
 
 # Default command
