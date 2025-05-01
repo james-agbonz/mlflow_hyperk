@@ -10,7 +10,6 @@ from torch.utils.data import DataLoader
 import os
 import json
 import logging
-import shap
 from captum.attr import IntegratedGradients, visualization
 from PIL import Image
 import io
@@ -61,7 +60,6 @@ def get_latest_run_id():
         logger.error(f"Error getting latest run ID: {str(e)}")
         return None
 
-# Add this function that was being imported in app.py
 def get_run_id_from_file(file_path="/app/artifacts/latest_run_id.txt"):
     """Get run ID from a file"""
     try:
@@ -133,59 +131,64 @@ def load_data(batch_size=32):
         raise
 
 def compute_feature_importance(model, data_loader, num_samples=5):
-    """Compute feature importance using SHAP"""
+    """Compute feature importance using custom gradient-based approach instead of SHAP
+    This avoids the TensorFlow dependency that SHAP's DeepExplainer has
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     model.eval()
     
-    # Get a batch of images for background
-    background = []
-    for images, _ in data_loader:
-        background.append(images[:10])
-        if len(background) >= 2:  # Limit number of background samples
-            break
-    background = torch.cat(background, dim=0).to(device)
-    
-    # Initialize SHAP explainer
-    explainer = shap.DeepExplainer(model, background)
-    
     # Get images to explain
     samples = []
     sample_labels = []
-    sample_paths = []
     for images, labels in data_loader:
         for i in range(min(num_samples, len(images))):
-            samples.append(images[i:i+1])
+            # Clone to avoid modifying the original data
+            samples.append(images[i:i+1].clone())
             sample_labels.append(labels[i].item())
         if len(samples) >= num_samples:
             break
     
-    # Compute SHAP values
-    shap_values = []
+    # Initialize importance metrics
     channel_importance = {'r_importance': [], 'g_importance': [], 'b_importance': []}
+    feature_importance_maps = []
     
     try:
-        for i, sample in enumerate(samples):
-            sample = sample.to(device)
-            batch_shap_values = explainer.shap_values(sample)
+        for i, (sample, label) in enumerate(zip(samples, sample_labels)):
+            # Move to device and ensure it's a new tensor requiring grad
+            sample = sample.clone().detach().to(device).requires_grad_(True)
             
-            # Extract channel importance
-            abs_shap = [np.abs(s) for s in batch_shap_values]
+            # Forward pass
+            output = model(sample)
             
-            # For binary classification, we often get one class's shap values
-            if len(abs_shap) == 1:
-                abs_shap = abs_shap[0]
-                
-            # Calculate channel importance (R, G, B)
-            if len(abs_shap.shape) == 4:  # [batch, channel, height, width]
-                for c, channel in enumerate(['r', 'g', 'b']):
-                    imp = np.mean(abs_shap[0, c, :, :])
-                    channel_importance[f'{channel}_importance'].append(float(imp))
+            # Get prediction for the correct class
+            if output.size(1) > 1:  # Multi-class
+                pred = output[0, label]
+            else:  # Binary
+                pred = output[0, 0]
             
-            shap_values.append(batch_shap_values)
+            # Backward pass to get gradients
+            pred.backward()
+            
+            # Get gradients and convert to importance scores
+            grads = sample.grad.clone().detach()
+            
+            # Take absolute values of gradients as importance
+            importance = grads.abs().cpu().numpy()[0]  # Shape: [C, H, W]
+            
+            # Calculate channel importance
+            for c, channel in enumerate(['r', 'g', 'b']):
+                imp = float(np.mean(importance[c, :, :]))
+                channel_importance[f'{channel}_importance'].append(imp)
+            
+            # Store feature importance map
+            feature_importance_maps.append(importance)
+            
+            # Clear gradients for next iteration
+            sample.grad = None
             
     except Exception as e:
-        logger.error(f"Error computing SHAP values: {str(e)}")
+        logger.error(f"Error computing feature importance: {str(e)}")
         logger.error(traceback.format_exc())
     
     # Compute average channel importance
@@ -194,35 +197,59 @@ def compute_feature_importance(model, data_loader, num_samples=5):
         if values:
             avg_importance[channel] = float(np.mean(values))
     
-    # Generate a SHAP summary plot
-    shap_plot_path = None
-    if shap_values:
+    # Generate a feature importance plot
+    feature_plot_path = None
+    if feature_importance_maps:
         try:
-            plt.figure(figsize=(10, 6))
-            # Convert to numpy for plotting
-            sample_images = [s.cpu().numpy() for s in samples]
+            # Create a plot showing input image and its importance map
+            fig, axes = plt.subplots(2, 3, figsize=(15, 8))
             
-            # For first class (typically in binary classification)
-            if isinstance(shap_values[0], list):
-                plot_shap_values = [sv[0] for sv in shap_values]
-            else:
-                plot_shap_values = shap_values
-                
-            # Create summary plot
-            shap.image_plot(plot_shap_values, np.array(sample_images))
+            # Select first sample for visualization
+            sample_img = samples[0].detach().cpu().numpy()[0].transpose(1, 2, 0)
+            importance_map = feature_importance_maps[0]
+            
+            # Normalize sample for display
+            sample_img = (sample_img - sample_img.min()) / (sample_img.max() - sample_img.min())
+            
+            # Plot original image
+            axes[0, 0].imshow(sample_img)
+            axes[0, 0].set_title("Original Image")
+            axes[0, 0].axis('off')
+            
+            # Plot importance heatmap (combined channels)
+            combined_importance = np.mean(importance_map, axis=0)
+            im = axes[0, 1].imshow(combined_importance, cmap='hot')
+            axes[0, 1].set_title("Combined Importance")
+            axes[0, 1].axis('off')
+            fig.colorbar(im, ax=axes[0, 1])
+            
+            # Plot importance heatmap overlaid on image
+            axes[0, 2].imshow(sample_img)
+            im = axes[0, 2].imshow(combined_importance, cmap='hot', alpha=0.6)
+            axes[0, 2].set_title("Importance Overlay")
+            axes[0, 2].axis('off')
+            
+            # Plot per-channel importance
+            channel_names = ['Red Channel', 'Green Channel', 'Blue Channel']
+            for c in range(3):
+                axes[1, c].imshow(importance_map[c], cmap='hot')
+                axes[1, c].set_title(f"{channel_names[c]} Importance")
+                axes[1, c].axis('off')
+            
+            plt.tight_layout()
             
             # Save plot
-            shap_plot_path = os.path.join(PLOT_DIR, "shap_summary.png")
-            plt.savefig(shap_plot_path)
+            feature_plot_path = os.path.join(PLOT_DIR, "feature_importance.png")
+            plt.savefig(feature_plot_path)
             plt.close()
-            logger.info(f"Saved SHAP summary plot to {shap_plot_path}")
+            logger.info(f"Saved feature importance plot to {feature_plot_path}")
         except Exception as e:
-            logger.error(f"Error creating SHAP plot: {str(e)}")
+            logger.error(f"Error creating feature importance plot: {str(e)}")
             logger.error(traceback.format_exc())
     
     return {
         "channel_importance": avg_importance,
-        "plots": {"shap_plot": "shap_summary.png"} if shap_plot_path else {}
+        "plots": {"feature_importance": "feature_importance.png"} if feature_plot_path else {}
     }
 
 def compute_integrated_gradients(model, data_loader, num_samples=5):
@@ -231,8 +258,23 @@ def compute_integrated_gradients(model, data_loader, num_samples=5):
     model = model.to(device)
     model.eval()
     
+    # Create a wrapper model that clones outputs to avoid view errors
+    class ModelWrapper(torch.nn.Module):
+        def __init__(self, base_model):
+            super(ModelWrapper, self).__init__()
+            self.base_model = base_model
+            
+        def forward(self, x):
+            output = self.base_model(x)
+            # Clone output to avoid view errors
+            if isinstance(output, torch.Tensor):
+                return output.clone()
+            return output
+    
+    wrapped_model = ModelWrapper(model)
+    
     # Initialize Integrated Gradients
-    ig = IntegratedGradients(model)
+    ig = IntegratedGradients(wrapped_model)
     
     # Get samples to explain
     samples = []
@@ -242,7 +284,8 @@ def compute_integrated_gradients(model, data_loader, num_samples=5):
     
     for images, labels in data_loader:
         for i in range(min(num_samples, len(images))):
-            samples.append(images[i:i+1].clone())  # Clone to avoid views
+            # Make a deep copy to avoid view issues
+            samples.append(images[i:i+1].clone().detach())
             sample_labels.append(labels[i].item())
             sample_names.append(f"sample_{idx}")
             idx += 1
@@ -255,56 +298,62 @@ def compute_integrated_gradients(model, data_loader, num_samples=5):
     
     try:
         for i, (sample, label, name) in enumerate(zip(samples, sample_labels, sample_names)):
-            sample = sample.to(device)
+            # Move to device
+            sample = sample.clone().detach().to(device)
             target = label
-            sample.requires_grad = True  # Enable gradients for this tensor
             
-            # Get attributions - we need to detach and clone to avoid backward hook issues
-            with torch.no_grad():
-                attributions = ig.attribute(sample, target=target, return_convergence_delta=False)
-                # Make a copy of the attributions to avoid in-place operations
-                attributions_copy = attributions.detach().clone()
+            # Create a new tensor that requires grad - completely detached from original
+            input_tensor = sample.clone().detach().requires_grad_(True)
             
-            # Extract channel importance safely (no in-place operations)
-            with torch.no_grad():
-                attr_sum = torch.sum(torch.abs(attributions_copy), dim=[2, 3])
-                r_imp = float(attr_sum[0, 0].item())
-                g_imp = float(attr_sum[0, 1].item())
-                b_imp = float(attr_sum[0, 2].item())
-            
-            # Create visualization only for the first sample
-            if i == 0:
-                # Convert to numpy for visualization
-                # We need to detach and make copies before moving to CPU to avoid view issues
-                with torch.no_grad():
-                    img_np = sample.detach().clone().cpu().squeeze(0).permute(1, 2, 0).numpy()
-                    attr_np = attributions_copy.detach().clone().cpu().squeeze(0).permute(1, 2, 0).numpy()
+            # Get attributions with safety mechanisms
+            try:
+                attributions = ig.attribute(input_tensor, target=target, return_convergence_delta=False)
                 
-                # Normalize attributions for visualization
-                attr_np = visualization.normalize_image_attr(attr_np, 'absolute_value', 0)
+                # Clone attributions to be extra safe
+                attributions_clone = attributions.clone().detach()
                 
-                # Create visualization
-                fig, _ = visualization.visualize_image_attr_multiple(
-                    attr_np, img_np, 
-                    ["original_image", "heat_map"],
-                    ["Input", "Attribution Magnitude"],
-                    show_colorbar=True,
-                    use_pyplot=False
-                )
+                # Process attributions - work with a fresh copy for safety
+                attr_np = attributions_clone.cpu().numpy().squeeze(0).transpose(1, 2, 0)
                 
-                # Save plot
-                heatmap_plot_path = os.path.join(PLOT_DIR, "attributions_heatmap.png")
-                fig.savefig(heatmap_plot_path)
-                plt.close(fig)
-                logger.info(f"Saved attribution heatmap to {heatmap_plot_path}")
-            
-            # Add explanation entry
-            explanations.append({
-                "image": name,
-                "r_importance": r_imp,
-                "g_importance": g_imp,
-                "b_importance": b_imp
-            })
+                # Extract channel importance safely (using numpy to avoid pytorch views)
+                attr_sum = np.abs(attr_np).sum(axis=(0, 1))
+                r_imp = float(attr_sum[0])
+                g_imp = float(attr_sum[1])
+                b_imp = float(attr_sum[2])
+                
+                # Create visualization only for the first sample
+                if i == 0:
+                    # Convert to numpy for visualization
+                    img_np = sample.detach().cpu().numpy().squeeze(0).transpose(1, 2, 0)
+                    
+                    # Normalize attributions for visualization
+                    attr_np_viz = visualization.normalize_image_attr(attr_np, 'absolute_value', 0)
+                    
+                    # Create visualization
+                    fig, _ = visualization.visualize_image_attr_multiple(
+                        attr_np_viz, img_np, 
+                        ["original_image", "heat_map"],
+                        ["Input", "Attribution Magnitude"],
+                        show_colorbar=True,
+                        use_pyplot=False
+                    )
+                    
+                    # Save plot
+                    heatmap_plot_path = os.path.join(PLOT_DIR, "attributions_heatmap.png")
+                    fig.savefig(heatmap_plot_path)
+                    plt.close(fig)
+                    logger.info(f"Saved attribution heatmap to {heatmap_plot_path}")
+                
+                # Add explanation entry
+                explanations.append({
+                    "image": name,
+                    "r_importance": r_imp,
+                    "g_importance": g_imp,
+                    "b_importance": b_imp
+                })
+            except Exception as e:
+                logger.error(f"Error processing sample {i}: {str(e)}")
+                continue
     except Exception as e:
         logger.error(f"Error computing Integrated Gradients: {str(e)}")
         logger.error(traceback.format_exc())
@@ -323,8 +372,8 @@ def explain_model(run_id):
         # Load data
         data_loader, class_names = load_data()
         
-        # Get feature importance using SHAP
-        logger.info("Computing SHAP feature importance")
+        # Get feature importance using gradient-based approach
+        logger.info("Computing gradient-based feature importance")
         shap_results = compute_feature_importance(model, data_loader)
         
         # Get attributions using Integrated Gradients
