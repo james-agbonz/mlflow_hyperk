@@ -1,133 +1,160 @@
-version: "3.9"
+version: '3.8'
 
 services:
-  # MongoDB Service
-  mongodb:
-    image: mongo:6
-    container_name: mongodb
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongodb_data:/data/db
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD: example
-    healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
-      interval: 5s
-      timeout: 10s
-      retries: 5
-    restart: unless-stopped
-    command: mongod --quiet --logpath /dev/null
-
-  # MLflow Tracking Server
   mlflow:
     image: ghcr.io/mlflow/mlflow
     container_name: mlflow
     ports:
-      - "5000:5000"
+      - "5000:5000"  # MLflow UI on port 5000
+    environment:
+      - MLFLOW_TRACKING_URI=http://0.0.0.0:5000
+      - MLFLOW_SERVER_DEFAULT_ARTIFACT_ROOT=file:///mlflow/mlruns
+      - MLFLOW_ARTIFACT_UPLOAD_DOWNLOAD_TIMEOUT=300
     volumes:
-      - ./mlruns:/mlflow/mlruns
-      - ./mlruns:/app/mlruns
-    command: mlflow server --backend-store-uri /mlflow/mlruns --host 0.0.0.0 --port 5000
-    depends_on:
-      mongodb:
-        condition: service_healthy
-    restart: unless-stopped
+      - ./mlruns:/mlflow/mlruns  # Persist experiment data
+    command: ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000", "--backend-store-uri", "file:///mlflow/mlruns"]
+    networks:
+      - xai-network
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:5000/api/2.0/mlflow/experiments/list"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
 
-  # Training Service
   trainer:
     build:
       context: .
-      dockerfile: Dockerfile
-    volumes:
-      - .:/app
-      - ./mlruns:/mlflow/mlruns
-      - ./artifacts:/app/artifacts
-      - ./mlruns:/app/mlruns
-    working_dir: /app/trainer
-    command: python train.py
-    environment:
-      - PYTHONUNBUFFERED=1
-      - MLFLOW_TRACKING_URI=http://mlflow:5000
-    depends_on:
-      - mlflow
-    
-
-  # Model Explainer Service (Flask)
-  explainer:
-    build:
-      context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfiles/Dockerfile.train
     volumes:
       - ./data:/app/data
-      - ./explainer:/app/code
-      - ./.env:/app/.env
-      - .:/app
-      - ./mlruns:/app/mlruns
-    working_dir: /app/code
-    ports:
-      - "5005:5005"
-    command: python app.py
+      - ./models:/app/models
+    shm_size: '1gb'  # optional but recommended
     environment:
-      - PYTHONUNBUFFERED=1
+      - DATA_DIR=/app/data
+      - NUM_WORKERS=0
+      - SAVE_DIR=/app/models
+      - EPOCHS=5
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+    networks:
+      - xai-network
     depends_on:
-      mongodb:
-        condition: service_healthy
-      trainer:
-        condition: service_completed_successfully
-    restart: unless-stopped
+      - mlflow
 
-  # Evaluation Service
   evaluator:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfiles/Dockerfile.eval
     volumes:
       - ./data:/app/data
-      - ./evaluator:/app/code
-      - ./.env:/app/.env
-      - .:/app
-    working_dir: /app/code
-    ports:
-      - "5006:5006"
-    command: python app.py
+      - ./models:/app/models
+      - ./results:/app/results
+      - ./results/evaluation:/app/results/evaluation
     environment:
-      - PYTHONUNBUFFERED=1
+      - DATA_DIR=/app/data
+      - MODEL_PATH=/app/models/resnet18_best.pth
+      - MODEL_NAME=resnet18
+      - RESULTS_DIR=/app/results/evaluation
+      - SPLIT=test
+      - DEVICE=cpu
+      - NUM_WORKERS=0
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+    shm_size: '1gb'
+    networks:
+      - xai-network
     depends_on:
-      mongodb:
-        condition: service_healthy
-      trainer:
-        condition: service_completed_successfully
-    restart: unless-stopped
+      - mlflow
+
+  explainer:
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile.explain
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./results:/app/results
+      - ./results/evaluation:/app/results/evaluation
+    environment:
+      - DATA_DIR=/app/data
+      - MODEL_PATH=/app/models/resnet18_best.pth
+      - MODEL_NAME=resnet18
+      - DEVICE=cpu
+      - SPLIT=test
+      - NUM_SAMPLES=10
+      - RESULTS_DIR=/app/results/explanations
+      - METHODS=all
+      - NUM_WORKERS=0
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_TRACKING_USERNAME=''
+      - MLFLOW_TRACKING_PASSWORD=''
+    networks:
+      - xai-network
+    depends_on:
+      - mlflow
+    shm_size: '1gb'
+
+
 
   dashboard:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfiles/Dockerfile.dashboard
     volumes:
-      - ./data:/app/data
-      - ./dashboard:/app/code
-      - ./.env:/app/.env
-      - .:/app
-      - ./mlruns:/app/mlruns
-    working_dir: /app/code
+      - ./dashboard:/app
+      - ./results/evaluation:/app/results/evaluation
+      - ./results/explanations:/app/results/explanations
     ports:
       - "8501:8501"
-    command: streamlit run dashboard.py
     environment:
-      - PYTHONUNBUFFERED=1
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+    networks:
+      - xai-network
     depends_on:
-      mongodb:
-        condition: service_healthy
-      explainer:
-        condition: service_started
-      mlflow:
-        condition: service_started
-    restart: unless-stopped
+      - mlflow
+    command: >
+      streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0
 
-volumes:
-  mongodb_data:
+
+  # pipeline:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfiles/Dockerfile.base  # Use your base Python image
+  #   volumes:
+  #     - ./data:/app/data
+  #     - ./models:/app/models
+  #     - ./results:/app/results
+  #     - ./results/evaluation:/app/results/evaluation
+  #     - ./results/explanations:/app/results/explanations
+  #     - ./mlruns:/app/mlruns
+  #   environment:
+  #     - DATA_DIR=/app/data
+  #     - MODEL_PATH=/app/models/resnet18_best.pth
+  #     - MODEL_NAME=resnet18
+  #     - SAVE_DIR=/app/models
+  #     - RESULTS_DIR=/app/results
+  #     - SPLIT=test
+  #     - DEVICE=cpu
+  #     - NUM_SAMPLES=10
+  #     - METHODS=all
+  #     - NUM_WORKERS=0
+  #     - MLFLOW_TRACKING_URI=http://mlflow:5000
+  #     - MLFLOW_ARTIFACT_UPLOAD_DOWNLOAD_TIMEOUT=300
+  #   networks:
+  #     - xai-network
+  #   depends_on:
+  #     mlflow:
+  #       condition: service_healthy
+  #   command: >
+  #     sh -c "
+  #       echo 'Running complete XAI pipeline...' &&
+  #       echo 'Step 1: Training model...' &&
+  #       cd /app/trainer && python train.py &&
+  #       echo 'Step 2: Evaluating model...' &&
+  #       cd /app/evaluator && python evaluate.py &&
+  #       echo 'Step 3: Generating explanations...' &&
+  #       cd /app/explainer && python explain.py &&
+  #       echo 'Pipeline completed. View results in dashboard.'
+  #     "
+
+networks:
+  xai-network:
+    driver: bridge
