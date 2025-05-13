@@ -1,0 +1,18 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy evaluation code
+COPY evaluator/evaluate.py .
+
+# Copy other necessary modules (e.g., model loading, data loaders)
+COPY augmenter/ ./augmenter/
+COPY data/ ./data/
+COPY models/ ./models/
+
+CMD ["python", "evaluate.py"]
+# ENTRYPOINT ["tail", "-f", "/dev/null"]
